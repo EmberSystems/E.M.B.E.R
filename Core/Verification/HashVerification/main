@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+import os
+import sys
+import argparse
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+VERIFICATION_DIR = SCRIPT_DIR
+
+def generate_keys():
+    private_dir = os.path.join(VERIFICATION_DIR, "private")
+    os.makedirs(private_dir, exist_ok=True)
+    
+    private_key_path = os.path.join(private_dir, "private_key.pem")
+    public_key_path = os.path.join(private_dir, "public_key.pem")
+    
+    print("Generating RSA keypair...")
+    
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=4096,
+        backend=default_backend()
+    )
+    
+    public_key = private_key.public_key()
+    
+    with open(private_key_path, "wb") as f:
+        f.write(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ))
+    print(f"Private key saved to: {private_key_path}")
+    print("IMPORTANT: Keep this key secret and offline!")
+    
+    with open(public_key_path, "wb") as f:
+        f.write(public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ))
+    print(f"Public key saved to: {public_key_path}")
+    print("\nDone!")
+
+def sign_hashes():
+    private_key_path = os.path.join(VERIFICATION_DIR, "private", "private_key.pem")
+    hashes_file = os.path.join(VERIFICATION_DIR, "hashes", "hashes.txt")
+    signature_file = os.path.join(VERIFICATION_DIR, "hashes", "hashes.sig")
+    
+    if not os.path.exists(private_key_path):
+        print("Error: private_key.pem not found!")
+        print("Run with: python3 main generate-keys")
+        sys.exit(1)
+    
+    if not os.path.exists(hashes_file):
+        print("Error: hashes.txt not found!")
+        sys.exit(1)
+    
+    print("Loading private key...")
+    with open(private_key_path, "rb") as f:
+        private_key = serialization.load_pem_private_key(
+            f.read(), password=None, backend=default_backend()
+        )
+    
+    print("Reading hashes.txt...")
+    with open(hashes_file, "rb") as f:
+        data = f.read()
+    
+    print("Signing hashes...")
+    signature = private_key.sign(data, padding.PKCS1v15(), hashes.SHA256())
+    
+    with open(signature_file, "wb") as f:
+        f.write(signature)
+    
+    print(f"Signature saved to: {signature_file}")
+    print("Done!")
+
+def main():
+    parser = argparse.ArgumentParser(description="Hash Verification Management Tool")
+    parser.add_argument("command", choices=["generate-keys", "sign"], help="Command to run")
+    args = parser.parse_args()
+    
+    if args.command == "generate-keys":
+        generate_keys()
+    elif args.command == "sign":
+        sign_hashes()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+# core/exploits/Y2JB/Y2JB.py
+# Copyright (c) 2026 foxinwinter
+# Licensed under GPLv3. See Extra/Licenses/LICENSE
+
+import os
+import sys
+import socket
+import subprocess
+import time
+import platform
+import re
+import hashlib
+
+ESCAPE_SEQUENCE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+
+def sanitize_log(message):
+    return ESCAPE_SEQUENCE_RE.sub('', message)
+
+def compute_sha256(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+def verify_tool_hashes():
+    import os
+    verification_dir = os.path.join(BASE_DIR, "Core", "Verification", "HashVerification")
+    hashes_file = os.path.join(verification_dir, "hashes", "hashes.txt")
+    if not os.path.exists(hashes_file):
+        print("[WARNING] No hashes.txt found - skipping tool verification")
+        return True
+    
+    trusted = {}
+    with open(hashes_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                name, hash_val = line.split(":", 1)
+                name = name.strip().upper()
+                hash_val = hash_val.strip()
+                if name.startswith("TOOL_Y2JB_"):
+                    trusted[name] = hash_val
+    
+    tools = {
+        "TOOL_Y2JB_PAYLOAD_SENDER": PAYLOAD_SENDER,
+        "TOOL_Y2JB_LOG_SERVER": LOG_SERVER,
+    }
+    
+    all_valid = True
+    for tool_name, tool_path in tools.items():
+        expected_hash = trusted.get(tool_name)
+        if not expected_hash:
+            print(f"[WARNING] No hash configured for {tool_name}")
+            continue
+        if not os.path.exists(tool_path):
+            print(f"[ERROR] Tool not found: {tool_path}")
+            all_valid = False
+            continue
+        actual_hash = compute_sha256(tool_path)
+        if actual_hash == expected_hash:
+            print(f"[OK] {tool_name}: verified ({actual_hash[:16]}...)")
+        else:
+            print(f"[ERROR] {tool_name}: SHA256 mismatch! Expected {expected_hash[:16]}..., got {actual_hash[:16]}...")
+            all_valid = False
+    
+    return all_valid
+
+def verify_payload_signature():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.backends import default_backend
+    except ImportError:
+        print("[WARNING] cryptography not installed - skipping payload signature verification")
+        return True
+
+    verification_dir = os.path.join(BASE_DIR, "Core", "Verification", "HashVerification")
+    public_key_path = os.path.join(verification_dir, "private", "public_key.pem")
+    hashes_file = os.path.join(verification_dir, "hashes", "hashes.txt")
+    signature_file = os.path.join(verification_dir, "hashes", "hashes.sig")
+
+    if not os.path.exists(public_key_path):
+        print("[WARNING] public_key.pem not found - skipping payload signature verification")
+        return True
+    if not os.path.exists(signature_file):
+        print("[WARNING] hashes.sig not found - skipping payload signature verification")
+        return True
+
+    try:
+        with open(public_key_path, "rb") as f:
+            public_key = serialization.load_pem_public_key(f.read(), backend=default_backend())
+        with open(hashes_file, "rb") as f:
+            data = f.read()
+        with open(signature_file, "rb") as f:
+            signature = f.read()
+        public_key.verify(signature, data, padding.PKCS1v15(), hashes.SHA256())
+        print("[OK] Payload hash signature verified")
+        return True
+    except Exception as e:
+        print(f"[SECURITY] Payload signature verification FAILED: {e}")
+        return False
+
+def verify_payload_hashes():
+    verification_dir = os.path.join(BASE_DIR, "Core", "Verification", "HashVerification")
+    hashes_file = os.path.join(verification_dir, "hashes", "hashes.txt")
+    if not os.path.exists(hashes_file):
+        print("[ERROR] hashes.txt not found!")
+        return False
+    
+    trusted = {}
+    with open(hashes_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                name, hash_val = line.split(":", 1)
+                name = name.strip().upper()
+                hash_val = hash_val.strip()
+                if name.startswith("PAYLOAD_Y2JB_"):
+                    trusted[name] = hash_val
+    
+    payloads = {
+        "PAYLOAD_Y2JB_DLSYM_TEST": DLSYM_TEST_JS,
+        "PAYLOAD_Y2JB_LAPSE": LAPSE_JS,
+        "PAYLOAD_Y2JB_SETLOGSERVER": SETLOGSERVER_JS,
+        "PAYLOAD_Y2JB_PS5_HEURISTIC": PS5_HEURISTIC_JS,
+    }
+    
+    all_valid = True
+    for payload_name, payload_path in payloads.items():
+        expected_hash = trusted.get(payload_name)
+        if not expected_hash:
+            print(f"[WARNING] No hash configured for {payload_name}")
+            continue
+        if not os.path.exists(payload_path):
+            print(f"[ERROR] Payload not found: {payload_path}")
+            all_valid = False
+            continue
+        actual_hash = compute_sha256(payload_path)
+        if actual_hash == expected_hash:
+            print(f"[OK] {payload_name}: verified ({actual_hash[:16]}...)")
+        else:
+            print(f"[ERROR] {payload_name}: SHA256 mismatch! Expected {expected_hash[:16]}..., got {actual_hash[:16]}...")
+            all_valid = False
+    
+    return all_valid
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+CONFIG_DIR = os.path.join(SCRIPT_DIR, ".config")
+LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "IP_Port.txt")
+LOG_FILE = os.path.join(LOGS_DIR, "log_server.log")
+
+os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+TOOLS_DIR = os.path.join(BASE_DIR, "Tools", "Y2JB")
+PAYLOAD_SENDER = os.path.join(TOOLS_DIR, "payload_sender.py")
+LOG_SERVER = os.path.join(TOOLS_DIR, "log_server.py")
+EXPLOIT_DIR = os.path.join(BASE_DIR, "Core", "Exploits", "Y2JB")
+SETLOGSERVER_JS = os.path.join(EXPLOIT_DIR, "payloads", "setlogserver.js")
+PS5_HEURISTIC_JS = os.path.join(BASE_DIR, "payloads", "JS", "Main", "PS5_Heuristic.js")
+LAPSE_JS = os.path.join(EXPLOIT_DIR, "payloads", "lapse.js")
+DLSYM_TEST_JS = os.path.join(EXPLOIT_DIR, "payloads", "dlsym_test.js")
+SEND_PAYLOAD_PY = os.path.join(SCRIPT_DIR, "send_payload.py")
+
+DEFAULT_PORT = 50000
+
+
+class Y2JB:
+    def __init__(self, config_dir=None):
+        if config_dir:
+            self.config_dir = config_dir
+        else:
+            self.config_dir = CONFIG_DIR
+        self.config_file = os.path.join(self.config_dir, "IP_Port.txt")
+        self.log_file = os.path.join(LOGS_DIR, "log_server.log")
+        self.payload_sender = PAYLOAD_SENDER
+        self.log_server = LOG_SERVER
+        self.info_dir = os.path.join(BASE_DIR, "Core", "Exploits", "info", "Y2JB")
+        self.intro_file = os.path.join(self.info_dir, "intro.txt")
+
+    def get_local_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = "127.0.0.1"
+        finally:
+            s.close()
+        return ip
+
+    def read_ps5_config(self):
+        if not os.path.exists(self.config_file):
+            return None, None
+        with open(self.config_file, "r") as f:
+            lines = f.read().strip().split("\n")
+        ip = None
+        port = DEFAULT_PORT
+        for line in lines:
+            if line.startswith("IP:"):
+                ip = line.split(":", 1)[1].strip()
+            elif line.startswith("PORT:"):
+                port = int(line.split(":", 1)[1].strip())
+        return ip, port
+
+    def write_ps5_config(self, ip, port):
+        with open(self.config_file, "w") as f:
+            f.write(f"IP:{ip}\n")
+            f.write(f"PORT:{port}\n")
+
+    def ask_ps5_config(self):
+        print("Enter PS5 IP address: ", end="")
+        ip = input().strip()
+        print("Enter PS5 port (default 50000): ", end="")
+        port_input = input().strip()
+        port = int(port_input) if port_input else DEFAULT_PORT
+        self.write_ps5_config(ip, port)
+        return ip, port
+
+    def modify_setlogserver_js(self, ip):
+        with open(SETLOGSERVER_JS, "r") as f:
+            content = f.read()
+
+        new_server = f'"http://{ip}:8080/log"'
+
+        content = re.sub(
+            r"LOG_SERVER\s*=\s*[\"'].*?[\"']", f"LOG_SERVER = {new_server}", content
+        )
+
+        modified_path = SETLOGSERVER_JS + ".tmp"
+        with open(modified_path, "w") as f:
+            f.write(content)
+        return modified_path
+
+    def send_payload(self, file_path, host, port=DEFAULT_PORT):
+        if not os.path.exists(file_path):
+            print(f"[ERROR] Payload file not found: {file_path}")
+            return False
+        
+        actual_hash = compute_sha256(file_path)
+        
+        verification_dir = os.path.join(BASE_DIR, "Core", "Verification", "HashVerification")
+        hashes_file = os.path.join(verification_dir, "hashes", "hashes.txt")
+        trusted = {}
+        if os.path.exists(hashes_file):
+            with open(hashes_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if ":" in line:
+                        name, hash_val = line.split(":", 1)
+                        name = name.strip().upper()
+                        hash_val = hash_val.strip()
+                        if name.startswith("PAYLOAD_Y2JB_"):
+                            trusted[name] = hash_val
+        
+        payload_filename = os.path.basename(file_path).upper().replace(".JS", "")
+        payload_key = f"PAYLOAD_Y2JB_{payload_filename}"
+        expected_hash = trusted.get(payload_key)
+        
+        if expected_hash:
+            if actual_hash != expected_hash:
+                print(f"[SECURITY] Payload SHA256 mismatch for {os.path.basename(file_path)}!")
+                print(f"[SECURITY] Expected: {expected_hash[:16]}..., Got: {actual_hash[:16]}...")
+                print("[SECURITY] REFUSING TO SEND PAYLOAD!")
+                return False
+            else:
+                print(f"[OK] Payload {os.path.basename(file_path)} verified")
+        
+        with open(file_path, "rb") as f:
+            data = f.read()
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+        sock.sendall(data)
+        sock.close()
+        print(f"Sent {len(data)} bytes to {host}:{port}")
+        return True
+
+    def ask_firewall_permission(self):
+        system = platform.system()
+        if system == "Linux":
+            print("\n[!] You may need to allow incoming traffic on port 8080.")
+            print("    Run: sudo ufw allow 8080/tcp")
+            response = input("    Allow now? (y/n): ").strip().lower()
+            if response == "y":
+                subprocess.run(["sudo", "ufw", "allow", "8080/tcp"], check=False)
+                print("    Port 8080 allowed.")
+        elif system == "Windows":
+            print("\n[!] You may need to allow Python through Windows Firewall.")
+            print("    Allow python.exe in Windows Firewall when prompted.")
+            input("    Press Enter after allowing...")
+
+    def wait_for_fw_version(self, timeout=60):
+        print(f"Waiting for FW_VERSION from log server (timeout: {timeout}s)...")
+        start = time.time()
+        while time.time() - start < timeout:
+            if os.path.exists(self.log_file):
+                with open(self.log_file, "r") as f:
+                    content = f.read()
+                if "FW_VERSION:" in content:
+                    for line in content.split("\n"):
+                        if "FW_VERSION:" in line:
+                            version_str = line.split("FW_VERSION:", 1)[1].strip()
+                            return version_str
+            time.sleep(1)
+        return None
+
+    def check_jailbroken(self, timeout=30):
+        print(f"Checking if already jailbroken (timeout: {timeout}s)...")
+        start = time.time()
+        while time.time() - start < timeout:
+            if os.path.exists(self.log_file):
+                with open(self.log_file, "r") as f:
+                    content = f.read()
+                if (
+                    "Error: process is not jailbroken" in content
+                    or "ERROR in accept loop: process is not jailbroken" in content
+                ):
+                    return False
+                if "jailbroken" in content.lower() or "success" in content.lower():
+                    return True
+            time.sleep(1)
+        return False
+
+    def parse_fw_version(self, version_str):
+        try:
+            parts = version_str.split(".")
+            major = int(parts[0])
+            minor = int(parts[1]) if len(parts) > 1 else 0
+            return major * 100 + minor
+        except:
+            return 999
+
+    def intro(self):
+        if os.path.exists(self.intro_file):
+            with open(self.intro_file, "r") as f:
+                print(f.read())
+        else:
+            print("Intro file not found.")
+        print("-" * 40)
+        print()
+
+    def run(self, config_override=False):
+        self.intro()
+
+        print("\n--- Verifying Tool Integrity ---")
+        if not verify_tool_hashes():
+            print("[ERROR] Tool verification failed! Exiting.")
+            return False
+
+        print("\n--- Verifying Payload Integrity ---")
+        if not verify_payload_signature():
+            print("[ERROR] Payload signature verification failed! Exiting.")
+            return False
+        if not verify_payload_hashes():
+            print("[ERROR] Payload verification failed! Exiting.")
+            return False
+
+        local_ip = self.get_local_ip()
+        print(f"Local IP: {local_ip}")
+
+        print("\nStarting log server in background...")
+        with open(self.log_file, "w") as logf:
+            proc = subprocess.Popen(
+                [sys.executable, self.log_server], stdout=logf, stderr=subprocess.STDOUT
+            )
+        time.sleep(2)
+        print(f"Log server running (PID: {proc.pid})")
+
+        if config_override or not os.path.exists(self.config_file):
+            ps5_ip, ps5_port = self.ask_ps5_config()
+        else:
+            ps5_ip, ps5_port = self.read_ps5_config()
+        if ps5_ip is None or ps5_port is None:
+            ps5_ip, ps5_port = self.ask_ps5_config()
+        else:
+            ps5_port = ps5_port if ps5_port else DEFAULT_PORT
+            print(f"Using saved PS5 config: {ps5_ip}:{ps5_port}")
+
+        print("\n--- Firewall Notice ---")
+        self.ask_firewall_permission()
+
+        print("\nModifying setlogserver.js...")
+        modified_setlogserver = self.modify_setlogserver_js(local_ip)
+
+        print(f"\nSending setlogserver.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(modified_setlogserver, ps5_ip, ps5_port)
+
+        print(f"Sending PS5_Heuristic.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(PS5_HEURISTIC_JS, ps5_ip, ps5_port)
+
+        print("\nWaiting for PS5 to respond with FW_VERSION...")
+        fw_version = self.wait_for_fw_version()
+
+        if fw_version is None:
+            print("ERROR: Timeout waiting for FW_VERSION from PS5")
+            proc.terminate()
+            sys.exit(1)
+
+        print(f"Detected FW_VERSION: {fw_version}")
+
+        fw_num = self.parse_fw_version(fw_version)
+        if fw_num > 1001:
+            print("\nlapse.js cannot be run on FW Versions higher than 10.01")
+            print("Stopping here.")
+            proc.terminate()
+            return False
+
+        print("\nSending dlsym_test.js to check jailbreak status...")
+        self.send_payload(DLSYM_TEST_JS, ps5_ip, ps5_port)
+
+        time.sleep(2)
+
+        is_jailbroken = self.check_jailbroken()
+
+        if is_jailbroken:
+            print("\nPS5 is already jailbroken! Entering Y2JB console...")
+            self.y2jb_repl(ps5_ip, ps5_port)
+            proc.terminate()
+            return True
+
+        print("\nPS5 is not jailbroken. Sending lapse.js...")
+        print(f"\nSending lapse.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(LAPSE_JS, ps5_ip, ps5_port)
+
+        print("\n=== All payloads sent successfully ===")
+        proc.terminate()
+        return True
+
+    def y2jb_repl(self, ps5_ip=None, ps5_port=None):
+        self.intro()
+
+        print("\n--- Verifying Tool Integrity ---")
+        if not verify_tool_hashes():
+            print("[ERROR] Tool verification failed! Exiting.")
+            return
+
+        print("\n--- Verifying Payload Integrity ---")
+        if not verify_payload_signature():
+            print("[ERROR] Payload signature verification failed! Exiting.")
+            return
+        if not verify_payload_hashes():
+            print("[ERROR] Payload verification failed! Exiting.")
+            return
+
+        if ps5_ip is None:
+            ps5_ip, ps5_port = self.read_ps5_config()
+
+        print("\n=== Y2JB Console ===")
+        print("Type 'help' for available commands, 'exit' to quit.\n")
+
+        if ps5_ip is None or ps5_ip == "127.0.0.1":
+            print("No PS5 configured. Use 'config' command to set IP and port.\n")
+            ps5_ip = "127.0.0.1"
+            ps5_port = DEFAULT_PORT
+
+        while True:
+            try:
+                cmd = input("Y2JB> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting...")
+                break
+
+            if not cmd:
+                continue
+
+            parts = cmd.split()
+            command = parts[0].lower()
+            args = parts[1:]
+
+            if command == "exit" or command == "quit":
+                print("Exiting...")
+                break
+            elif command == "help":
+                print("Available commands:")
+                print(
+                    "  quickrun           Run the full exploit flow (auto-detect FW, jailbreak check)"
+                )
+                print("  payload            Send a custom .js payload to the PS5")
+                print("  config             Configure PS5 IP and port")
+                print("  jailbroken         Enter the jailbroken sub-console")
+                print(
+                    "  list               List available payloads in payloads/JS/Y2JB/"
+                )
+                print("  send <payload>    Send a specific payload")
+                print("  exit/quit          Exit the program")
+                print()
+                print("Examples:")
+                print("  quickrun")
+                print("  payload /path/to/custom.js")
+                print("  config")
+                print("  send setlogserver.js")
+            elif command == "quickrun":
+                print("Running quickrun...")
+                self.run_quickrun(ps5_ip, ps5_port)
+            elif command == "payload":
+                payloads_dir = os.path.join(EXPLOIT_DIR, "payloads")
+                if not os.path.exists(payloads_dir):
+                    print("Error: payloads directory not found")
+                    continue
+                print("Available payloads:")
+                available = []
+                for f in sorted(os.listdir(payloads_dir)):
+                    if f.endswith(".js"):
+                        print(f"  {f}")
+                        available.append(f)
+                print("\nEnter payload name (or 'exit' to cancel): ")
+                choice = input("> ").strip()
+                if not choice or choice.lower() == "exit":
+                    print("Cancelled.")
+                    continue
+                if not choice.endswith(".js"):
+                    choice += ".js"
+                payload_path = os.path.join(payloads_dir, choice)
+                if os.path.exists(payload_path):
+                    print(f"Sending {choice} to {ps5_ip}:{ps5_port}...")
+                    self.send_payload(payload_path, ps5_ip, ps5_port)
+                else:
+                    print(f"Error: Payload not found: {choice}")
+            elif command == "config":
+                self.config_ps5()
+                ps5_ip, ps5_port = self.read_ps5_config()
+            elif command == "jailbroken":
+                print("Entering jailbroken console...")
+                self.run_jailbroken_repl(ps5_ip, ps5_port)
+            elif command == "list":
+                print("Available payloads:")
+                payloads_dir = os.path.join(EXPLOIT_DIR, "payloads")
+                if os.path.exists(payloads_dir):
+                    for f in sorted(os.listdir(payloads_dir)):
+                        if f.endswith(".js"):
+                            print(f"  {f}")
+            elif command == "send":
+                if not args:
+                    print("Usage: send <payload>")
+                    continue
+                payload_name = args[0]
+                if not payload_name.endswith(".js"):
+                    payload_name += ".js"
+                payload_path = os.path.join(EXPLOIT_DIR, "payloads", payload_name)
+                if os.path.exists(payload_path):
+                    print(f"Sending {payload_name} to {ps5_ip}:{ps5_port}...")
+                    self.send_payload(payload_path, ps5_ip, ps5_port)
+                else:
+                    print(f"Payload not found: {payload_name}")
+            else:
+                print(
+                    f"Unknown command: {command}. Type 'help' for available commands."
+                )
+
+    def config_ps5(self):
+        print("Configure PS5 IP and Port:")
+        print("Enter PS5 IP address: ", end="")
+        ip = input().strip()
+        print("Enter PS5 port (default 50000): ", end="")
+        port_input = input().strip()
+        port = int(port_input) if port_input else DEFAULT_PORT
+        self.write_ps5_config(ip, port)
+        print(f"Configuration saved: {ip}:{port}")
+
+    def run_quickrun(self, ps5_ip=None, ps5_port=None):
+        self.intro()
+
+        local_ip = self.get_local_ip()
+        print(f"Local IP: {local_ip}")
+
+        # Ask for PS5 configuration if not provided or if config doesn't exist
+        if ps5_ip is None or ps5_port is None:
+            if not os.path.exists(self.config_file):
+                ps5_ip, ps5_port = self.ask_ps5_config()
+            else:
+                ps5_ip, ps5_port = self.read_ps5_config()
+                if ps5_ip is None or ps5_port is None:
+                    ps5_ip, ps5_port = self.ask_ps5_config()
+                else:
+                    ps5_port = ps5_port if ps5_port else DEFAULT_PORT
+                    print(f"Using saved PS5 config: {ps5_ip}:{ps5_port}")
+
+        print("\nStarting log server in background...")
+        with open(self.log_file, "w") as logf:
+            proc = subprocess.Popen(
+                [sys.executable, self.log_server], stdout=logf, stderr=subprocess.STDOUT
+            )
+        time.sleep(2)
+        print(f"Log server running (PID: {proc.pid})")
+
+        print("\nModifying setlogserver.js...")
+        modified_setlogserver = self.modify_setlogserver_js(local_ip)
+
+        print(f"\nSending setlogserver.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(modified_setlogserver, ps5_ip, ps5_port)
+
+        print(f"Sending PS5_Heuristic.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(PS5_HEURISTIC_JS, ps5_ip, ps5_port)
+
+        print("\nWaiting for PS5 to respond with FW_VERSION...")
+        fw_version = self.wait_for_fw_version()
+
+        if fw_version is None:
+            print("ERROR: Timeout waiting for FW_VERSION from PS5")
+            proc.terminate()
+            return
+
+        print(f"Detected FW_VERSION: {fw_version}")
+
+        fw_num = self.parse_fw_version(fw_version)
+        if fw_num > 1001:
+            print("\nlapse.js cannot be run on FW Versions higher than 10.01")
+            print("Stopping here.")
+            proc.terminate()
+            return
+
+        print("\nSending dlsym_test.js to check jailbreak status...")
+        self.send_payload(DLSYM_TEST_JS, ps5_ip, ps5_port)
+
+        time.sleep(2)
+
+        is_jailbroken = self.check_jailbroken()
+
+        if is_jailbroken:
+            print("\nPS5 is already jailbroken! Entering Y2JB console...")
+            self.y2jb_repl(ps5_ip, ps5_port)
+            proc.terminate()
+            return
+
+        print("\nPS5 is not jailbroken. Sending lapse.js...")
+        print(f"\nSending lapse.js to {ps5_ip}:{ps5_port}...")
+        self.send_payload(LAPSE_JS, ps5_ip, ps5_port)
+
+        print("\n=== All payloads sent successfully ===")
+        proc.terminate()
+
+    def run_jailbroken_repl(self, ps5_ip, ps5_port):
+        try:
+            from Core.Exploits.Y2JB.SubREPL.jailbroken import repl as jailbroken_repl
+
+            jailbroken_repl(ps5_ip, ps5_port)
+        except ImportError:
+            print("Error: jailbroken.py not found")
+            print(f"Expected: {os.path.join(SCRIPT_DIR, 'SubREPL', 'jailbroken.py')}")
+
+
+def main():
+    y2jb = Y2JB()
+    y2jb.y2jb_repl()
+
+
+if __name__ == "__main__":
+    main()

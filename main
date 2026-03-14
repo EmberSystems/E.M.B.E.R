@@ -10,62 +10,137 @@ import importlib
 import inspect
 import platform
 import hashlib
+import re
+import subprocess
+
+try:
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+try:
+    import readline
+    HAS_READLINE = True
+except ImportError:
+    HAS_READLINE = False
 
 VERSION = "Alpha"
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT_DIR)
 
-from Core.Exploits.Y2JB import Y2JB as Y2JBClass
+
 
 EXPLOITS = {}
 EXPLOIT_INFO = {}
+TRUSTED_HASHES = {}
+HASHES_SIGNATURE_VALID = False
 
-TRUSTED_HASHES = {
-    "Y2JB": [
-        "8497b464c8a7d6bd2a332e30ffe42f6a1f117cb4200c44cce04084eb0b9f2383",
-    ],
-}
+
+def verify_hashes_signature():
+    global HASHES_SIGNATURE_VALID
+    if not HAS_CRYPTO:
+        print("[WARNING] cryptography library not installed - skipping signature verification")
+        HASHES_SIGNATURE_VALID = True
+        return True
+
+    verification_dir = os.path.join(ROOT_DIR, "Core", "Verification", "HashVerification")
+    public_key_path = os.path.join(verification_dir, "private", "public_key.pem")
+    hashes_file = os.path.join(verification_dir, "hashes", "hashes.txt")
+    signature_file = os.path.join(verification_dir, "hashes", "hashes.sig")
+
+    if not os.path.exists(public_key_path):
+        print("[WARNING] public_key.pem not found - skipping signature verification")
+        HASHES_SIGNATURE_VALID = True
+        return True
+
+    if not os.path.exists(signature_file):
+        print("[WARNING] hashes.sig not found - skipping signature verification")
+        HASHES_SIGNATURE_VALID = True
+        return True
+
+    try:
+        from cryptography.hazmat.primitives import serialization
+        with open(public_key_path, "rb") as f:
+            public_key = serialization.load_pem_public_key(
+                f.read(),
+                backend=default_backend()
+            )
+
+        with open(hashes_file, "rb") as f:
+            data = f.read()
+
+        with open(signature_file, "rb") as f:
+            signature = f.read()
+
+        public_key.verify(
+            signature,
+            data,
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+        HASHES_SIGNATURE_VALID = True
+        print("[OK] Hash signature verified")
+        return True
+    except Exception as e:
+        print(f"[SECURITY] Hash signature verification FAILED: {e}")
+        print("[SECURITY] Refusing to load untrusted hashes!")
+        return False
+
+
+def load_trusted_hashes():
+    if not verify_hashes_signature():
+        return
+    hashes_file = os.path.join(ROOT_DIR, "Core", "Verification", "HashVerification", "hashes", "hashes.txt")
+    if not os.path.exists(hashes_file):
+        return
+    with open(hashes_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                name, hash_val = line.split(":", 1)
+                name = name.strip().upper()
+                hash_val = hash_val.strip()
+                if name not in TRUSTED_HASHES:
+                    TRUSTED_HASHES[name] = []
+                TRUSTED_HASHES[name].append(hash_val)
+
+
+load_trusted_hashes()
 
 
 def scan_exploits():
-    exploits_dir = os.path.join(ROOT_DIR, "Core", "Exploits")
-    info_dir = os.path.join(exploits_dir, "info")
+    subrepls_dir = os.path.join(ROOT_DIR, "Core", "subREPLs")
+    info_dir = os.path.join(ROOT_DIR, "Core", "Exploits", "info")
 
-    for root, _, files in os.walk(exploits_dir):
-        for filename in files:
-            if filename.endswith(".py") and not filename.startswith("_"):
-                module_name = filename[:-3]
-                rel_path = os.path.relpath(os.path.join(root, filename), exploits_dir)
-                rel_module = os.path.splitext(rel_path)[0].replace(os.sep, ".")
-                file_path = os.path.join(root, filename)
+    if not os.path.isdir(subrepls_dir):
+        return
 
-                actual_hash = compute_sha256(file_path)
-                trusted = TRUSTED_HASHES.get(module_name.upper(), [])
-
-                if trusted and actual_hash not in trusted:
-                    print(f"[Security] Skipping {module_name}: SHA256 not trusted ({actual_hash[:16]}...)")
-                    continue
-
-                if actual_hash:
-                    print(f"[Security] Verified {module_name}: SHA256 ({actual_hash[:16]}...)")
-
-                try:
-                    module = importlib.import_module(f"Core.Exploits.{rel_module}")
-                    for name, obj in inspect.getmembers(module):
-                        if inspect.isclass(obj) and hasattr(obj, "run"):
-                            if name == module_name or name.upper() == module_name.upper():
-                                EXPLOITS[name.upper()] = obj
-                                info = load_exploit_info(info_dir, module_name)
-                                info["FilePath"] = file_path
-                                EXPLOIT_INFO[name.upper()] = info
-                except Exception as e:
-                    print(f"Warning: Failed to load exploit module {module_name}: {e}")
+    for filename in os.listdir(subrepls_dir):
+        file_path = os.path.join(subrepls_dir, filename)
+        if os.path.isfile(file_path) and not filename.startswith("_"):
+            name = os.path.splitext(filename)[0].upper()
+            EXPLOITS[name] = file_path
+            info = load_exploit_info(info_dir, name.lower())
+            info["FilePath"] = file_path
+            EXPLOIT_INFO[name] = info
 
 
 def load_exploit_info(info_dir, exploit_name):
-    info_subdir = os.path.join(info_dir, exploit_name)
-    info_file = os.path.join(info_subdir, f"{exploit_name}.txt")
+    found_dir = None
+    if os.path.isdir(info_dir):
+        for d in os.listdir(info_dir):
+            if d.lower() == exploit_name.lower():
+                found_dir = d
+                break
+    info_subdir = os.path.join(info_dir, found_dir) if found_dir else os.path.join(info_dir, exploit_name)
+    actual_name = found_dir if found_dir else exploit_name
+    info_file = os.path.join(info_subdir, f"{actual_name}.txt")
     intro_file = os.path.join(info_subdir, "intro.txt")
     info = {"About": "N/A", "Author": "N/A", "License": "N/A", "Intro": None, "SHA256": None, "FilePath": None}
 
@@ -111,6 +186,9 @@ def validate_exploit(name):
     info = EXPLOIT_INFO.get(name)
     if not info:
         return False, "Exploit not found"
+
+    if not HASHES_SIGNATURE_VALID:
+        return True, "Hash signature invalid - skipping validation"
 
     trusted = TRUSTED_HASHES.get(name, [])
     if not trusted:
@@ -158,6 +236,10 @@ def cmd_info(args):
     print()
 
 
+def clear_console():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
 def cmd_run(args):
     name = args.exploit.upper()
     if name not in EXPLOITS:
@@ -171,12 +253,16 @@ def cmd_run(args):
         print(f"Error: Cannot run exploit - {message}")
         sys.exit(1)
 
-    exploit = EXPLOITS[name]()
+    clear_console()
+    repl_script = EXPLOITS[name]
     try:
-        exploit.run(config_override=args.config)
+        subprocess.run([sys.executable, repl_script])
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
-        sys.exit(130)
+        return
+    except Exception as e:
+        print(f"\nError running exploit: {e}")
+        return
 
 
 def cmd_doctor(args):
@@ -205,9 +291,9 @@ def cmd_doctor(args):
             errors.append(f"Missing directory: {name}")
 
     payload_paths = [
-        os.path.join(ROOT_DIR, "payloads", "Y2JB", "setlogserver.js"),
-        os.path.join(ROOT_DIR, "payloads", "Main", "PS5_Heuristic.js"),
-        os.path.join(ROOT_DIR, "payloads", "Y2JB", "lapse.js"),
+        os.path.join(ROOT_DIR, "payloads", "JS", "Y2JB", "setlogserver.js"),
+        os.path.join(ROOT_DIR, "payloads", "JS", "Main", "PS5_Heuristic.js"),
+        os.path.join(ROOT_DIR, "payloads", "JS", "Y2JB", "lapse.js"),
     ]
 
     for path in payload_paths:
@@ -224,6 +310,38 @@ def cmd_doctor(args):
     else:
         errors.append("Missing info directory")
 
+    print("\n--- SHA256 Hash Verification ---")
+    if not HASHES_SIGNATURE_VALID:
+        print("[SKIPPED] Hash signature invalid - cannot verify hashes")
+    else:
+        exploits_dir = os.path.join(ROOT_DIR, "Core", "Exploits")
+        for exploit_name, trusted_hashes in TRUSTED_HASHES.items():
+            found = False
+            for root, _, files in os.walk(exploits_dir):
+                for filename in files:
+                    if filename == f"{exploit_name}.py":
+                        exploit_file = os.path.join(root, filename)
+                        found = True
+                        actual_hash = compute_sha256(exploit_file)
+                        if actual_hash in trusted_hashes:
+                            print(f"[OK] {exploit_name}: SHA256 verified ({actual_hash[:16]}...)")
+                        else:
+                            errors.append(f"{exploit_name}: SHA256 mismatch! Expected one of {trusted_hashes}, got {actual_hash}")
+                        break
+                if found:
+                    break
+        if not found:
+            errors.append(f"{exploit_name}: File not found in {exploits_dir}")
+
+    for root, dirs, files in os.walk(exploits_dir):
+        for exploit_name in dirs:
+            info_subdir = os.path.join(root, exploit_name)
+            if os.path.isdir(info_subdir):
+                continue
+            name = exploit_name[:-3].upper()
+            if HASHES_SIGNATURE_VALID and name not in TRUSTED_HASHES:
+                warnings.append(f"{name}: No SHA256 hash configured - cannot verify integrity")
+
     print()
     if errors:
         print("ERRORS:")
@@ -238,39 +356,97 @@ def cmd_doctor(args):
     print()
 
 
+def setup_completion():
+    if not HAS_READLINE:
+        return
+
+    COMMANDS = ["help", "list", "info", "run", "doctor", "exit", "quit"]
+    EXPLOIT_NAMES = list(EXPLOITS.keys())
+
+    def completer(text, state):
+        line = readline.get_line_buffer()
+        parts = line.split()
+
+        if not parts:
+            matches = [c + " " for c in COMMANDS if c.startswith(text)]
+        elif len(parts) == 1:
+            matches = [c + " " for c in COMMANDS if c.startswith(parts[0])]
+        elif parts[0] in ("info", "run") and len(parts) == 2:
+            matches = [e for e in EXPLOIT_NAMES if e.lower().startswith(parts[1].lower())]
+        else:
+            matches = []
+
+        if state < len(matches):
+            return matches[state]
+        return None
+
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer(completer)
+
+
+def repl():
+    setup_completion()
+
+    print("=== PS5 Jailbreak Toolset ===")
+    print("Type 'help' for available commands, 'exit' to quit.\n")
+
+    for name, info in EXPLOIT_INFO.items():
+        file_path = info.get("FilePath")
+        if file_path and HASHES_SIGNATURE_VALID:
+            actual_hash = compute_sha256(file_path)
+            trusted = TRUSTED_HASHES.get(name, [])
+            if trusted and actual_hash not in trusted:
+                print(f"[SECURITY] Skipping {name}: SHA256 not trusted ({actual_hash[:16]}...)\n")
+            elif actual_hash:
+                print(f"[SECURITY] Verified {name}: SHA256 ({actual_hash[:16]}...)\n")
+
+    while True:
+        try:
+            cmd = input("main> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting...")
+            break
+
+        if not cmd:
+            continue
+
+        parts = cmd.split()
+        command = parts[0].lower()
+        args = parts[1:]
+
+        if command == "exit" or command == "quit":
+            print("Exiting...")
+            break
+        elif command == "help":
+            print("Available commands:")
+            print("  list              List available exploits")
+            print("  info <exploit>    Show exploit info")
+            print("  run <exploit>     Run an exploit")
+            print("  doctor            Run environment diagnostics")
+            print("  exit/quit         Exit the program")
+        elif command == "list":
+            cmd_list(argparse.Namespace())
+        elif command == "info":
+            if not args:
+                print("Usage: info <exploit>")
+                continue
+            cmd_info(argparse.Namespace(exploit=args[0]))
+        elif command == "run":
+            if not args:
+                print("Usage: run <exploit> [--config]")
+                continue
+            exploit_name = args[0]
+            config_override = "--config" in args
+            cmd_run(argparse.Namespace(exploit=exploit_name, config=config_override))
+        elif command == "doctor":
+            cmd_doctor(argparse.Namespace())
+        else:
+            print(f"Unknown command: {command}. Type 'help' for available commands.")
+
+
 def main():
     scan_exploits()
-
-    parser = argparse.ArgumentParser(description="PS5 Jailbreak Toolset")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    list_parser = subparsers.add_parser("list", help="List available exploits")
-
-    info_parser = subparsers.add_parser("info", help="Show exploit info")
-    info_parser.add_argument("exploit", help="Exploit name")
-
-    run_parser = subparsers.add_parser("run", help="Run an exploit")
-    run_parser.add_argument("exploit", help="Exploit name")
-    run_parser.add_argument(
-        "--config", action="store_true", help="Force prompt for PS5 configuration"
-    )
-
-    doctor_parser = subparsers.add_parser("doctor", help="Run environment diagnostics")
-
-    args = parser.parse_args()
-
-    if args.command == "list":
-        cmd_list(args)
-    elif args.command == "info":
-        cmd_info(args)
-    elif args.command == "run":
-        cmd_run(args)
-    elif args.command == "doctor":
-        cmd_doctor(args)
-    else:
-        parser.print_help()
+    repl()
 
 
 if __name__ == "__main__":

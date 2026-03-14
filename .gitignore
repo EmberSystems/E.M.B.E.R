@@ -1,5 +1,10 @@
+# Python Stuff
 .ruff_cache/
 __pycache__/
-Core/Exploits/__pycache__/
-Core/Exploits/.config/
-Tools/.config/
+
+# Local Stuff
+.config/
+misc.txt
+logs/
+Core/Verification/HashVerification/private/
+
