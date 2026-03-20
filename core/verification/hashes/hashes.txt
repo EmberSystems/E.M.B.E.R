@@ -1,10 +1,15 @@
-# Trusted SHA256 hashes for exploits, Tools, and Payloads
+# Trusted SHA256 hashes for Core, Exploits, Tools, and Payloads
 # Format: NAME:hash
-# Sections: Exploits, Tools, Payloads
+# Sections: Core, Exploits, Tools, Payloads
+
+# Core
+CORE_SECURITY:2efd55f01a6dab98ba78c959161c40cf2556be9646aaffffbd7f3f4d22dc0ce3
+CORE___INIT__:fa7202609dbd6916d89eb6e7d859adef6ce95f5f1b34d0e6556edce9be06365d
+CORE_UTILS:e7dfbc344d6870d9f0b64ebc6b25f66945860db4b2fe0500e64eeda52de1f1df
 
 # Exploits
-LUAC0RE:16ad6f273079ed1c035a2d3ca345d9392385845e20d10f73bad4edb12bafc4b6
-Y2JB:80d635f4b4042ecdfed2f1c564f2eeec0b41cb4f6ef9c6f77dead17e2b893702
+LUAC0RE:40390b7454e8e15843301f7bd8ebe47f10d27fe1f84b25aafb6837fc41d728fa
+Y2JB:d428ce973206696d473af336f31ed432e0a44b3e247e2d4a77b16f714e3a26b2
 
 # Tools
 TOOL_LUAC0RE_PAYLOAD_SENDER:8ef5ef8409636028086182cd1aff31662c6607d22677b4f751ebbc074a9ac012

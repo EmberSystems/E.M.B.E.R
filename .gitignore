@@ -5,9 +5,12 @@ __pycache__/
 # Local Stuff
 misc.txt
 core/verification/keys/private_key.pem
-core/exploits/*/logs
-core/exploits/*/configs
+core/exploits/*/logs/*
+core/exploits/*/configs/*
+first_run.txt
 
+# Testing Stuff
+core/color.py
 
 
 

@@ -123,6 +123,16 @@ def get_exploit_payload_manifest(exploit):
     return []
 
 
+def get_common_files():
+    common_dir = os.path.join(PROJECT_ROOT, "core", "common")
+    files = []
+    if os.path.exists(common_dir):
+        for item in os.listdir(common_dir):
+            if item.endswith(".py"):
+                files.append(item[:-3])
+    return files
+
+
 def get_payload_display_name(filename, exploit_payloads):
     for payload in exploit_payloads:
         if payload.get("file") == filename:
@@ -212,12 +222,22 @@ def auto():
     payloads = get_payloads()
 
     hashes_output = [
-        "# Trusted SHA256 hashes for exploits, Tools, and Payloads",
+        "# Trusted SHA256 hashes for Core, Exploits, Tools, and Payloads",
         "# Format: NAME:hash",
-        "# Sections: Exploits, Tools, Payloads",
+        "# Sections: Core, Exploits, Tools, Payloads",
         "",
-        "# Exploits",
+        "# Core",
     ]
+
+    common_files = get_common_files()
+    for common_file in common_files:
+        file_path = os.path.join(PROJECT_ROOT, "core", "common", f"{common_file}.py")
+        if os.path.exists(file_path):
+            hash_val = compute_sha256(file_path)
+            hashes_output.append(f"CORE_{common_file.upper()}:{hash_val}")
+            print(f"  CORE_{common_file}: {hash_val}")
+
+    hashes_output.extend(["", "# Exploits"])
 
     for exploit in exploits:
         exploit_file = os.path.join(
