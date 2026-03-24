@@ -2,8 +2,6 @@
 
 import sys
 import os
-import urwid
-import threading
 import time
 import socket
 import json
@@ -11,6 +9,7 @@ import hashlib
 import random
 import string
 import platform
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -32,7 +31,7 @@ class EMBERUI:
 
     def __init__(self):
         self.session_manager = SessionManager()
-        self.payload_manager = PayloadManager()
+        self.payload_manager = PayloadManager(self.session_manager)
         self.exploit_manager = ExploitManager()
         self.log_manager = LogManager()
         self.device_manager = DeviceManager()
@@ -58,27 +57,13 @@ class EMBERUI:
         self.logs_paused = False
 
         self._generate_session_id()
-        self._setup_ui()
 
     def _generate_session_id(self):
         while True:
             sid = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-            if sid not in self.session_manager.get_active_sessions():
+            if sid != self.session_manager.get_session_id():
                 self.session_id = sid
                 break
-
-    def _setup_ui(self):
-        self.palette = {
-            "header": "light cyan",
-            "log_output": "white",
-            "status": "light gray",
-            "sync": "light gray",
-            "about": "light gray",
-            "payload": "light gray",
-            "command": "light green",
-            "button": "light cyan",
-            "button_focus": "white",
-        }
 
     def get_target_info(self) -> Dict[str, Any]:
         return {
@@ -136,149 +121,163 @@ class EMBERUI:
         }
 
 
-class LogOutputBox(urwid.ListBox):
+class TerminalUI:
     def __init__(self, ui: EMBERUI):
         self.ui = ui
-        self.content = []
-        super().__init__(self.content)
+        self.width = 120
 
-    def refresh(self):
-        self.content = []
-        for log in self.ui.log_output[-50:]:
-            self.content.append(urwid.Text(log))
-        super().__init__(self.content)
+    def clear_screen(self):
+        os.system("cls" if os.name == "nt" else "clear")
 
+    def render_log_output(self) -> str:
+        lines = [FormatUtils.header(" /Log Output")]
+        for log in self.ui.log_output[-20:]:
+            lines.append(f"  {log}")
+        return "\n".join(lines)
 
-class StatusBox(urwid.WidgetWrap):
-    def __init__(self, ui: EMBERUI):
-        self.ui = ui
-        self._w = self._build()
-
-    def _build(self):
+    def render_status(self) -> str:
         status = self.ui.get_status_info()
-
-        content = [
-            urwid.Text(("header", " /Status")),
-            urwid.Divider(),
-            urwid.Text(f"State: {status['state']}"),
-            urwid.Text(f"Log Server: {status['log_server']}"),
-            urwid.Text(f"Last Sent Payload: {status['last_sent_payload']}"),
-            urwid.Text(f"Last Action: {status['last_action']}"),
-            urwid.Divider(),
-            urwid.Text(("header", " /Quick-Actions")),
-            urwid.Divider(),
+        lines = [
+            FormatUtils.header(" /Status"),
+            f"  State: {status['state']}",
+            f"  Log Server: {status['log_server']}",
+            f"  Last Sent Payload: {status['last_sent_payload']}",
+            f"  Last Action: {status['last_action']}",
+            "",
+            FormatUtils.header(" /Quick-Actions"),
+            "  --- Logging ---",
+            "  [Pause Logs]  [Clear Logs]",
+            "  --- Session ---",
+            "  [Kill Session]  [Reconnect]",
+            "  [Refetch Target Info]  [Enable Debug Mode]",
+            "  --- Payload ---",
+            "  [Resend Last Payload]  [Refresh Payload List]",
+            "  [Enable Unsafe Mode]",
         ]
+        return "\n".join(lines)
 
-        return urwid.ListBox(content)
-
-
-class SyncBox(urwid.WidgetWrap):
-    def __init__(self, ui: EMBERUI):
-        self.ui = ui
-        self._w = self._build()
-
-    def _build(self):
+    def render_sync(self) -> str:
         sync = self.ui.get_sync_info()
-
-        content = [
-            urwid.Text(("header", " /Sync")),
-            urwid.Divider(),
-            urwid.Text("Payloads: Loaded"),
-            urwid.Text(f"Luac0re: {sync['luac0re']['latest']}"),
-            urwid.Text(f"Y2JB: {sync['y2jb']['latest']}"),
+        lines = [
+            FormatUtils.header(" /Sync"),
+            f"  Payloads: Loaded",
+            f"  Luac0re: {sync['luac0re']['latest']}",
+            f"  Y2JB: {sync['y2jb']['latest']}",
         ]
+        return "\n".join(lines)
 
-        return urwid.ListBox(content)
-
-
-class AboutBox(urwid.WidgetWrap):
-    def __init__(self, ui: EMBERUI):
-        self.ui = ui
-        self._w = self._build()
-
-    def _build(self):
+    def render_about(self) -> str:
         about = self.ui.get_about_info()
-
-        content = [
-            urwid.Text(("header", " /About")),
-            urwid.Divider(),
-            urwid.Text(("header", " --- Host ---")),
-            urwid.Text(f"OS: {about['os']}"),
-            urwid.Text(f"Logging Port: {about['logging_port']}"),
-            urwid.Divider(),
-            urwid.Text(("header", " --- Target ---")),
-            urwid.Text(f"Target IP: {about['target_ip']}"),
-            urwid.Text(f"Target Port: {about['target_port']}"),
-            urwid.Divider(),
-            urwid.Text(("header", " --- E.M.B.E.R ---")),
-            urwid.Text(f"Version: {about['version']}"),
-            urwid.Text(f"Build: {about['build']}"),
-            urwid.Divider(),
-            urwid.Text(("header", " --- Info ---")),
-            urwid.Text(f"Developer: {about['author']}"),
-            urwid.Text(f"Repo: {about['repo']}"),
+        lines = [
+            FormatUtils.header(" /About"),
+            FormatUtils.header(" --- Host ---"),
+            f"  OS: {about['os']}",
+            f"  Logging Port: {about['logging_port']}",
+            "",
+            FormatUtils.header(" --- Target ---"),
+            f"  Target IP: {about['target_ip']}",
+            f"  Target Port: {about['target_port']}",
+            "",
+            FormatUtils.header(" --- E.M.B.E.R ---"),
+            f"  Version: {about['version']}",
+            f"  Build: {about['build']}",
+            "",
+            FormatUtils.header(" --- Info ---"),
+            f"  Developer: {about['author']}",
+            f"  Repo: {about['repo']}",
         ]
+        return "\n".join(lines)
 
-        return urwid.ListBox(content)
-
-
-class PayloadExplorerBox(urwid.WidgetWrap):
-    def __init__(self, ui: EMBERUI):
-        self.ui = ui
-        self._w = self._build()
-
-    def _build(self):
+    def render_payload_explorer(self) -> str:
         payloads = self.ui.get_payload_list()
+        lines = [FormatUtils.header(" /Payload Explorer")]
 
-        content = [
-            urwid.Text(("header", " /Payload Explorer")),
-            urwid.Divider(),
+        if not payloads:
+            lines.append("  No payloads loaded")
+        else:
+            for p in payloads:
+                lines.append(f"  {p} [send] [edit]")
+        return "\n".join(lines)
+
+    def render_command_prompt(self) -> str:
+        lines = [
+            FormatUtils.header(" /Command Prompt"),
+            "  > list exploits",
+            "  Exploit: Luac0re",
+            "  Exploit: Y2JB",
+            "  > select exploit Luac0re",
+            "  > start logserver",
+        ]
+        return "\n".join(lines)
+
+    def render(self):
+        log = self.render_log_output()
+        status = self.render_status()
+        sync = self.render_sync()
+        about = self.render_about()
+        payload = self.render_payload_explorer()
+        command = self.render_command_prompt()
+
+        lines = [
+            f"╔{'═' * 78}╗╔{'═' * 26}╗╔{'═' * 25}╗",
+            f"║ /Logs{' ' * 71}║║ /Status{' ' * 18}║║ /Sync{' ' * 17}║",
+            f"╟{'─' * 78}╢╟{'─' * 26}╢╟{'─' * 25}╢",
         ]
 
-        for p in payloads:
-            content.append(urwid.Text(f"{p} [send] [edit]"))
+        log_lines = log.split("\n")
+        status_lines = status.split("\n")
+        sync_lines = sync.split("\n")
 
-        return urwid.ListBox(content)
+        max_lines = max(len(log_lines), len(status_lines), len(sync_lines))
 
+        for i in range(max_lines):
+            l = log_lines[i] if i < len(log_lines) else ""
+            s = status_lines[i] if i < len(status_lines) else ""
+            sy = sync_lines[i] if i < len(sync_lines) else ""
+            lines.append(f"║ {l:<76} ║ {s:<24} ║ {sy:<23} ║")
 
-class CommandPromptBox(urwid.WidgetWrap):
-    def __init__(self, ui: EMBERUI):
-        self.ui = ui
-        self._w = self._build()
+        lines.append(f"╟{'─' * 78}╢╟{'─' * 26}╢╟{'─' * 25}╢")
 
-    def _build(self):
-        content = [
-            urwid.Text(("header", " /Command Prompt")),
-            urwid.Divider(),
-        ]
-        return urwid.ListBox(content)
+        about_lines = about.split("\n")
+        payload_lines = payload.split("\n")
+
+        max_lines = max(len(about_lines), len(payload_lines))
+
+        for i in range(max_lines):
+            a = about_lines[i] if i < len(about_lines) else ""
+            p = payload_lines[i] if i < len(payload_lines) else ""
+            lines.append(f"║ {a:<76} ║ {p:<23} ║")
+
+        lines.append(f"╚{'═' * 78}╝╚{'═' * 26}╝╚{'═' * 25}╝")
+
+        lines.append("")
+        lines.append(
+            "╔════════════════════════════════════════════════════════════════════════════════════════╗"
+        )
+        lines.append(
+            "║ /Command Prompt                                                                      ║"
+        )
+        lines.append(
+            "╟────────────────────────────────────────────────────────────────────────────────────────╢"
+        )
+
+        command_lines = command.split("\n")
+        for cl in command_lines:
+            lines.append(f"║ {cl:<96} ║")
+
+        lines.append(
+            "╚════════════════════════════════════════════════════════════════════════════════════════╝"
+        )
+
+        return "\n".join(lines)
 
 
 class EMBERApplication:
     def __init__(self):
         self.ui = EMBERUI()
-        self.loop = None
+        self.term = TerminalUI(self.ui)
         self.command_history = []
         self.history_index = -1
-
-    def on_input(self, key):
-        if key == "enter":
-            self.execute_command(self.command_edit.get_edit_text())
-            self.command_edit.set_edit_text("")
-        elif key == "up":
-            if self.history_index < len(self.command_history) - 1:
-                self.history_index += 1
-                self.command_edit.set_edit_text(
-                    self.command_history[self.history_index]
-                )
-        elif key == "down":
-            if self.history_index > 0:
-                self.history_index -= 1
-                self.command_edit.set_edit_text(
-                    self.command_history[self.history_index]
-                )
-        elif key == "ctrl c":
-            raise urwid.ExitMainLoop()
 
     def execute_command(self, cmd: str):
         if not cmd.strip():
@@ -297,68 +296,32 @@ class EMBERApplication:
         except Exception as e:
             self.ui.add_log(f"Error: {str(e)}")
 
-    def main(self):
-        canvas = urwid.raw_display.Screen()
-
-        left_panel = urwid.ListBox(
-            [
-                urwid.Text(
-                    f"[{self.ui.session_id}] Welcome to E.M.B.E.R v{self.ui.VERSION}"
-                )
-            ]
+    def run(self):
+        print(
+            f"{FormatUtils.header('E.M.B.E.R v' + self.ui.VERSION)} - Exploit Management, Backup, and Execution Router"
         )
+        print(f"Session ID: {self.ui.session_id}")
+        print()
 
-        status_sync_about = urwid.Pile(
-            [
-                urwid.LineBox(StatusBox(self.ui), tl="┌", tr="┐", bl="└", br="┘"),
-                urwid.LineBox(SyncBox(self.ui), tl="┌", tr="┐", bl="└", br="┘"),
-                urwid.LineBox(AboutBox(self.ui), tl="┌", tr="┐", bl="└", br="┘"),
-            ]
-        )
-
-        right_panel = urwid.Pile(
-            [
-                status_sync_about,
-                urwid.LineBox(
-                    PayloadExplorerBox(self.ui), tl="┌", tr="┐", bl="└", br="┘"
-                ),
-            ]
-        )
-
-        command_panel = urwid.LineBox(
-            CommandPromptBox(self.ui), tl="┌", tr="┐", bl="└", br="┘"
-        )
-
-        self.command_edit = urwid.Edit("> ", edit_text="")
-        urwid.connect_signal(self.command_edit, "postchange", lambda *a: None)
-
-        main_layout = urwid.Pile(
-            [
-                urwid.Columns(
-                    [
-                        urwid.LineBox(left_panel, tl="┌", tr="┐", bl="└", br="┘"),
-                        right_panel,
-                    ]
-                ),
-                urwid.Columns(
-                    [
-                        command_panel,
-                        self.command_edit,
-                    ]
-                ),
-            ]
-        )
-
-        self.loop = urwid.MainLoop(
-            main_layout, palette=["header"], screen=canvas, input_filter=self.on_input
-        )
-        self.loop.run()
+        while True:
+            try:
+                print(self.term.render())
+                cmd = input(f"{FormatUtils.prompt('> ')}").strip()
+                if cmd.lower() in ["exit", "quit", "shutdown"]:
+                    print("Shutting down...")
+                    break
+                self.execute_command(cmd)
+            except KeyboardInterrupt:
+                print("\nExiting E.M.B.E.R...")
+                break
+            except Exception as e:
+                print(f"Error: {e}")
 
 
 def main():
     try:
         app = EMBERApplication()
-        app.main()
+        app.run()
     except KeyboardInterrupt:
         print("\nExiting E.M.B.E.R...")
     except Exception as e:
