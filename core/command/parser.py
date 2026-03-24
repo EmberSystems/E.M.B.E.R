@@ -12,3 +12,17 @@ def parse_command(raw_input: str) -> dict:
     args = parts[1:] if len(parts) > 1 else []
 
     return {"command": command, "args": args}
+
+
+class CommandParser:
+    def __init__(self):
+        self.command_history = []
+
+    def parse(self, raw_input: str) -> dict:
+        result = parse_command(raw_input)
+        if result["command"]:
+            self.command_history.append(raw_input)
+        return result
+
+    def get_history(self) -> list:
+        return self.command_history.copy()

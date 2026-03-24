@@ -1,9 +1,3 @@
- Notes (for my dumbass):
-    1: Completely replace EVERYTHING so far (make a backup (in ../) and rm -rf all the files / folders in the Working Folder (/nyaa/Github/EmberSystems/E.M.B.E.R), other than about.txt and apperance.txt
-    2: Each Section, has what it should be, preceded by /
-    3: Keep the /Label tags
-    4: Resize boxes to fit however big the terminal is (but set a minimum size)
-
 File / Folder Layout:
 
 E.M.B.E.R/
@@ -247,6 +241,6 @@ All Sections have what they are, preceded by a /
     Repo for luac0re is: 'https://github.com/Gezine/luac0re.git'
     Repo for Y2JB is: 'https://github.com/Gezine/Y2JB.git'
 /Payload Explorer
-    Lists all payloads that the current exploit supports
+    Lists all payloads that the current exploit supports (manifest.json)
 
 

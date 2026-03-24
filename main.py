@@ -10,6 +10,8 @@ import random
 import string
 import platform
 import threading
+import tty
+import termios
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -46,6 +48,7 @@ class EMBERUI:
         )
 
         self.log_output: List[str] = []
+        self.command_history: List[str] = []
         self.target_ip = ""
         self.target_port = 9000
         self.logging_port = 9090
@@ -55,6 +58,7 @@ class EMBERUI:
         self.debug_mode = False
         self.unsafe_mode = False
         self.logs_paused = False
+        self.exploit_class = ""
 
         self._generate_session_id()
 
@@ -88,20 +92,28 @@ class EMBERUI:
         return {
             "os": platform.system() + " " + platform.release(),
             "logging_port": self.logging_port,
-            "target_ip": self.target_ip or "Not set",
+            "target_ip": self.target_ip or "target-ip",
             "target_port": self.target_port,
             "author": "foxinwinter",
             "repo": "https://github.com/EmberSystems/E.M.B.E.R",
             "version": self.VERSION,
             "build": self.BUILD,
+            "exploit_class": self.exploit_class or "class (Webkit, Kernel, Etc.)",
+            "current_exploit": self.current_exploit or "Current Selected Exploit",
+            "session_uptime": self.session_manager.get_uptime(),
+            "connection_time": self.session_manager.get_connection_time(),
         }
 
     def add_log(self, message: str):
         if not self.logs_paused:
-            timestamp = FormatUtils.timestamp()
-            self.log_output.append(f"[{self.session_id}] {message}")
-            if len(self.log_output) > 100:
+            self.log_output.append(f"[{self.session_id}]: {message}")
+            if len(self.log_output) > 50:
                 self.log_output.pop(0)
+
+    def add_command(self, command: str):
+        self.command_history.append(command)
+        if len(self.command_history) > 12:
+            self.command_history.pop(0)
 
     def get_payload_list(self) -> List[str]:
         if not self.current_exploit:
@@ -121,170 +133,233 @@ class EMBERUI:
         }
 
 
+LOG_WIDTH = 96
+STATUS_WIDTH = 26
+SYNC_WIDTH = 24
+ABOUT_WIDTH = 78
+PAYLOAD_WIDTH = 41
+CMD_WIDTH = 96
+
+LOG_HEIGHT = 27
+STATUS_HEIGHT = 18
+SYNC_HEIGHT = 2
+ABOUT_HEIGHT = 22
+PAYLOAD_HEIGHT = 20
+CMD_HEIGHT = 14
+
+CMD_START_ROW = 31
+
+
+class ANSI:
+    CLEAR = "\033[2J"
+    HOME = "\033[H"
+    SAVE = "\033[s"
+    RESTORE = "\033[u"
+
+    @staticmethod
+    def move(row: int, col: int) -> str:
+        return f"\033[{row};{col}H"
+
+    @staticmethod
+    def clear_line() -> str:
+        return "\033[K"
+
+
 class TerminalUI:
     def __init__(self, ui: EMBERUI):
         self.ui = ui
-        self.width = 120
+        self.ansi = ANSI()
 
-    def clear_screen(self):
-        os.system("cls" if os.name == "nt" else "clear")
+    def render_log_output(self) -> List[str]:
+        lines = self.ui.log_output.copy()
+        while len(lines) < 27:
+            lines.append("")
+        return lines[:27]
 
-    def render_log_output(self) -> str:
-        lines = [FormatUtils.header(" /Log Output")]
-        for log in self.ui.log_output[-20:]:
-            lines.append(f"  {log}")
-        return "\n".join(lines)
-
-    def render_status(self) -> str:
+    def render_status(self) -> List[str]:
         status = self.ui.get_status_info()
-        lines = [
-            FormatUtils.header(" /Status"),
-            f"  State: {status['state']}",
-            f"  Log Server: {status['log_server']}",
-            f"  Last Sent Payload: {status['last_sent_payload']}",
-            f"  Last Action: {status['last_action']}",
+        return [
+            f"State: {status['state']}",
+            f"Log Server: {status['log_server']}",
+            f"Last Sent Payload: {status['last_sent_payload']}",
+            f"Last Action: {status['last_action']}",
             "",
-            FormatUtils.header(" /Quick-Actions"),
-            "  --- Logging ---",
-            "  [Pause Logs]  [Clear Logs]",
-            "  --- Session ---",
-            "  [Kill Session]  [Reconnect]",
-            "  [Refetch Target Info]  [Enable Debug Mode]",
-            "  --- Payload ---",
-            "  [Resend Last Payload]  [Refresh Payload List]",
-            "  [Enable Unsafe Mode]",
+            "/Quick-Actions",
+            "--- Logging ---",
+            "[Pause Logs]",
+            "[Clear Logs]",
+            "--- Session Mangement ---",
+            "[Kill Session",
+            "[Reconnect]",
+            "[Refetch Target Info]",
+            "[Enable Debug Mode]",
+            "--- Payload Mangement ---",
+            "[Resend Last Payload]",
+            "[Refresh Payload List]",
+            "[Enable Unsafe Mode]",
         ]
-        return "\n".join(lines)
 
-    def render_sync(self) -> str:
-        sync = self.ui.get_sync_info()
-        lines = [
-            FormatUtils.header(" /Sync"),
-            f"  Payloads: Loaded",
-            f"  Luac0re: {sync['luac0re']['latest']}",
-            f"  Y2JB: {sync['y2jb']['latest']}",
+    def render_sync(self) -> List[str]:
+        return [
+            f"Payloads: Payload Satus (more info in 2)",
+            f"Latest Release: check if latest release",
         ]
-        return "\n".join(lines)
 
-    def render_about(self) -> str:
+    def render_about(self) -> List[str]:
         about = self.ui.get_about_info()
-        lines = [
-            FormatUtils.header(" /About"),
-            FormatUtils.header(" --- Host ---"),
-            f"  OS: {about['os']}",
-            f"  Logging Port: {about['logging_port']}",
+        return [
+            "--- Host ---",
+            f"OS: {about['os']}",
+            f"Logging Port: {about['logging_port']}",
             "",
-            FormatUtils.header(" --- Target ---"),
-            f"  Target IP: {about['target_ip']}",
-            f"  Target Port: {about['target_port']}",
+            "--- Target --",
+            f"Target IP: {about['target_ip']}",
+            f"Target Port: {about['target_port']}",
+            f"Author: {about['author']}",
+            f"Exploit Class: {about['exploit_class']}",
+            f"Current Selected Exploit: {about['current_exploit']}",
             "",
-            FormatUtils.header(" --- E.M.B.E.R ---"),
-            f"  Version: {about['version']}",
-            f"  Build: {about['build']}",
+            "--- Session ---",
+            f"Session ID: {self.ui.session_id}",
+            f"Session Uptime: {about['session_uptime']}",
+            f"Connection Time: {about['connection_time']}",
             "",
-            FormatUtils.header(" --- Info ---"),
-            f"  Developer: {about['author']}",
-            f"  Repo: {about['repo']}",
+            "--- E.M.B.E.R ---",
+            f"Version: {about['version']}",
+            f"Build: {about['build']}",
+            "",
+            "--- Info ---",
+            f"Developer: {about['author']}",
+            f"Repo: {about['repo']}",
         ]
-        return "\n".join(lines)
 
-    def render_payload_explorer(self) -> str:
+    def render_payload_explorer(self) -> List[str]:
         payloads = self.ui.get_payload_list()
-        lines = [FormatUtils.header(" /Payload Explorer")]
+        lines = []
+        for p in payloads:
+            lines.append(f"{p} [send] [edit]")
+        while len(lines) < 20:
+            lines.append("")
+        return lines[:20]
 
-        if not payloads:
-            lines.append("  No payloads loaded")
-        else:
-            for p in payloads:
-                lines.append(f"  {p} [send] [edit]")
-        return "\n".join(lines)
+    def render_command_prompt(self) -> List[str]:
+        lines = []
+        for cmd in self.ui.command_history:
+            lines.append(f">{cmd}")
+        lines.append(">")
+        while len(lines) < 14:
+            lines.append("")
+        return lines[:14]
 
-    def render_command_prompt(self) -> str:
-        lines = [
-            FormatUtils.header(" /Command Prompt"),
-            "  > list exploits",
-            "  Exploit: Luac0re",
-            "  Exploit: Y2JB",
-            "  > select exploit Luac0re",
-            "  > start logserver",
-        ]
-        return "\n".join(lines)
+    def pad(self, text: str, width: int) -> str:
+        if len(text) < width:
+            return text + " " * (width - len(text))
+        return text[:width]
 
-    def render(self):
-        log = self.render_log_output()
-        status = self.render_status()
-        sync = self.render_sync()
-        about = self.render_about()
-        payload = self.render_payload_explorer()
-        command = self.render_command_prompt()
-
-        lines = [
-            f"╔{'═' * 78}╗╔{'═' * 26}╗╔{'═' * 25}╗",
-            f"║ /Logs{' ' * 71}║║ /Status{' ' * 18}║║ /Sync{' ' * 17}║",
-            f"╟{'─' * 78}╢╟{'─' * 26}╢╟{'─' * 25}╢",
-        ]
-
-        log_lines = log.split("\n")
-        status_lines = status.split("\n")
-        sync_lines = sync.split("\n")
-
-        max_lines = max(len(log_lines), len(status_lines), len(sync_lines))
-
-        for i in range(max_lines):
-            l = log_lines[i] if i < len(log_lines) else ""
-            s = status_lines[i] if i < len(status_lines) else ""
-            sy = sync_lines[i] if i < len(sync_lines) else ""
-            lines.append(f"║ {l:<76} ║ {s:<24} ║ {sy:<23} ║")
-
-        lines.append(f"╟{'─' * 78}╢╟{'─' * 26}╢╟{'─' * 25}╢")
-
-        about_lines = about.split("\n")
-        payload_lines = payload.split("\n")
-
-        max_lines = max(len(about_lines), len(payload_lines))
-
-        for i in range(max_lines):
-            a = about_lines[i] if i < len(about_lines) else ""
-            p = payload_lines[i] if i < len(payload_lines) else ""
-            lines.append(f"║ {a:<76} ║ {p:<23} ║")
-
-        lines.append(f"╚{'═' * 78}╝╚{'═' * 26}╝╚{'═' * 25}╝")
-
-        lines.append("")
-        lines.append(
-            "╔════════════════════════════════════════════════════════════════════════════════════════╗"
-        )
-        lines.append(
-            "║ /Command Prompt                                                                      ║"
-        )
-        lines.append(
-            "╟────────────────────────────────────────────────────────────────────────────────────────╢"
+    def render(self) -> str:
+        lines = (
+            open(os.path.join(os.path.dirname(__file__), "appearance.txt"))
+            .read()
+            .split("\n")[:44]
         )
 
-        command_lines = command.split("\n")
-        for cl in command_lines:
-            lines.append(f"║ {cl:<96} ║")
+        def pad_to(text: str, length: int) -> str:
+            if len(text) < length:
+                return text + " " * (length - len(text))
+            return text
 
-        lines.append(
-            "╚════════════════════════════════════════════════════════════════════════════════════════╝"
-        )
+        replacements = {
+            "[Session ID]": self.ui.session_id,
+            " State: Connected or Not Connected                ": pad_to(
+                f"│ State: {self.ui.get_status_info()['state']}", 51
+            ),
+            " Log Server: State (PID #)                        ": pad_to(
+                f"│ Log Server: {self.ui.get_status_info()['log_server']}", 51
+            ),
+            " Last Sent Payload:                               ": pad_to(
+                f"│ Last Sent Payload: {self.ui.get_status_info()['last_sent_payload']}",
+                51,
+            ),
+            " Last Action: (last ran command)                 ": pad_to(
+                f"│ Last Action: {self.ui.get_status_info()['last_action']}", 51
+            ),
+            "││ --- Host ---": "││ --- Host ---",
+            " OS: Detected OS                     ": pad_to(
+                f"│ OS: {self.ui.get_about_info()['os']}", 27
+            ),
+            " Logging Port: Port #               ": pad_to(
+                f"│ Logging Port: {self.ui.get_about_info()['logging_port']}", 27
+            ),
+            "││ --- Target --": "││ --- Target --",
+            " Target IP: target-ip               ": pad_to(
+                f"│ Target IP: {self.ui.get_about_info()['target_ip']}", 27
+            ),
+            " Target Port: target-port           ": pad_to(
+                f"│ Target Port: {self.ui.get_about_info()['target_port']}", 27
+            ),
+            " Author: author of exploit          ": pad_to(
+                f"│ Author: {self.ui.get_about_info()['author']}", 27
+            ),
+            " Exploit Class: class (Webkit, Kernel, Etc.)      ": pad_to(
+                f"│ Exploit Class: {self.ui.get_about_info()['exploit_class']}", 43
+            ),
+            " Current Selected Exploit:         ": pad_to(
+                f"│ Current Selected Exploit: {self.ui.get_about_info()['current_exploit']}",
+                27,
+            ),
+            "││ --- Session ---": "││ --- Session ---",
+            " Session ID: randomly generated 3 letter string   ": pad_to(
+                f"│ Session ID: {self.ui.session_id}", 41
+            ),
+            " Session Uptime: uptime             ": pad_to(
+                f"│ Session Uptime: {self.ui.get_about_info()['session_uptime']}", 27
+            ),
+            " Connection Time: connection-time  ": pad_to(
+                f"│ Connection Time: {self.ui.get_about_info()['connection_time']}", 27
+            ),
+            "││ --- E.M.B.E.R ---": "││ --- E.M.B.E.R ---",
+            " Version: ver #                     ": pad_to(
+                f"│ Version: {self.ui.get_about_info()['version']}", 27
+            ),
+            " Build: (build type)                ": pad_to(
+                f"│ Build: {self.ui.get_about_info()['build']}", 27
+            ),
+            "││ --- Info ---": "││ --- Info ---",
+            " Developer: foxinwinter             ": pad_to(
+                f"│ Developer: {self.ui.get_about_info()['author']}", 27
+            ),
+            " Repo: https://github.com/EmberSystems/E.M.B.E.R  ": pad_to(
+                f"│ Repo: {self.ui.get_about_info()['repo']}", 54
+            ),
+            " Support: Discord Server Link, or Website": "Support: Discord Server Link, or Website",
+        }
 
-        return "\n".join(lines)
+        result = []
+        for line in lines:
+            new_line = line
+            for old, new in replacements.items():
+                new_line = new_line.replace(old, new)
+            result.append(new_line)
+
+        return "\n".join(result)
+
+    def render_without_bottom(self) -> str:
+        return self.render()
 
 
 class EMBERApplication:
     def __init__(self):
         self.ui = EMBERUI()
         self.term = TerminalUI(self.ui)
-        self.command_history = []
+        self.ansi = ANSI()
         self.history_index = -1
+        self.cmd_start_row = CMD_START_ROW
 
     def execute_command(self, cmd: str):
         if not cmd.strip():
             return
 
-        self.command_history.append(cmd)
-        self.history_index = len(self.command_history)
+        self.ui.add_command(cmd)
 
         self.ui.add_log(f"> {cmd}")
 
@@ -293,29 +368,83 @@ class EMBERApplication:
             result = self.ui.router.route(parsed)
             if result:
                 self.ui.add_log(result)
+                if result == "shutdown":
+                    return "shutdown"
         except Exception as e:
             self.ui.add_log(f"Error: {str(e)}")
+        return None
 
     def run(self):
+        sys.stdout.write(ANSI.CLEAR + ANSI.HOME)
+        sys.stdout.flush()
+
         print(
             f"{FormatUtils.header('E.M.B.E.R v' + self.ui.VERSION)} - Exploit Management, Backup, and Execution Router"
         )
         print(f"Session ID: {self.ui.session_id}")
         print()
 
+        print(self.term.render_without_bottom())
+        sys.stdout.flush()
+
         while True:
             try:
-                print(self.term.render())
-                cmd = input(f"{FormatUtils.prompt('> ')}").strip()
+                self.draw_input_line()
+                cmd = self.read_input_line()
+
                 if cmd.lower() in ["exit", "quit", "shutdown"]:
                     print("Shutting down...")
                     break
-                self.execute_command(cmd)
+                result = self.execute_command(cmd)
+                if result == "shutdown":
+                    break
             except KeyboardInterrupt:
                 print("\nExiting E.M.B.E.R...")
                 break
             except Exception as e:
                 print(f"Error: {e}")
+
+    def draw_input_line(self):
+        sys.stdout.write(self.ansi.move(self.cmd_start_row, 3))
+        sys.stdout.write(">")
+        sys.stdout.write(self.ansi.move(self.cmd_start_row, 4))
+        sys.stdout.flush()
+
+    def read_input_line(self) -> str:
+        cmd = ""
+        old_settings = termios.tcgetattr(sys.stdin)
+
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+            while True:
+                ch = sys.stdin.read(1)
+                if not ch:
+                    break
+                if ch == "\n" or ch == "\r":
+                    print()
+                    break
+                elif ch == "\x7f":
+                    if cmd:
+                        cmd = cmd[:-1]
+                        sys.stdout.write(
+                            self.ansi.move(self.cmd_start_row, 4 + len(cmd))
+                        )
+                        sys.stdout.write(" ")
+                        sys.stdout.write(
+                            self.ansi.move(self.cmd_start_row, 4 + len(cmd))
+                        )
+                elif ch == "\x03":
+                    raise KeyboardInterrupt()
+                elif ch == "\x1b":
+                    continue
+                else:
+                    cmd += ch
+                    sys.stdout.write(ch)
+                sys.stdout.flush()
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+        return cmd.strip()
 
 
 def main():
